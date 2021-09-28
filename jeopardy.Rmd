@@ -1,0 +1,186 @@
+---
+title: "Winning Jeopardy"
+author: "Emmanuel Messori"
+date: "27/09/2021"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, tidy = TRUE)
+```
+
+## The context
+
+In June 2019, contestant James Holzhauer ended a 32-game winning streak, just barely missing the record for highest winnings. James Holzhauer dedicated hours of effort to optimizing what he did during a game to maximize how much money he earned. To achieve what he did, James had to learn and master the vast amount of trivia that Jeopardy can throw at the contestants.
+
+## Project objective
+
+In this project, we will exploit  a data set containing 20000 rows of,information about Jeopardy questions.Let's say like James, we want to prepare to become Jeopardy champions. We will have to familiarize with a vast amount of topics. Is there a way to  find which topics happen more frequently and prioritize them in our studies?
+
+
+```{r}
+library(tidyverse)
+jeopardy <- read_csv("https://query.data.world/s/7mo5lkiqhcfjjuxrfqn4ryluv4impg", name_repair = ~ str_to_lower(.))
+head(jeopardy)
+```
+The `value` column contains the prize value of each question in dollars. We will convert it to numeric and exclude the NA values.
+
+```{r}
+jeopardy %>%  mutate(value = parse_number(value)) %>%  filter(!is.na(value))->jeopardy
+
+```
+
+## Text normalization
+
+We want ensure that we lowercase all of the words and any remove punctuation. We remove punctuation because it ensures that the text stays as purely letters. Before normalization, the terms "Don't" and "don't" are considered to be different words, and we don't want this. For this step, we will normalize the `question`, `answer`, and `category` columns. Also a lot of question contain html anchor tags.
+
+```{r}
+jeopardy %>% filter(str_detect(question, "<.*?>")) %>% select(question) %>% head()
+```
+
+We'll clean the mentioned columns, removing html tags, converting to lowercase and finally removing all punctuation.
+
+```{r}
+jeopardy %>% mutate(question = str_replace_all(question,"<.*?>", "") %>% map_chr(~str_glue(.x))
+) %>% mutate(across(c(question, answer, category), ~str_remove_all(str_to_lower(.x),'[:punctuation:]'))) -> jeop_clean
+#we can safely remove the original data set
+rm(jeopardy)
+```
+
+## Asking questions
+
+We are now in a place where we can properly ask questions from the data and perform meaningful hypothesis tests on it. Given the near infinite amount of questions that can be asked in Jeopardy, you wonder if any particular subject area has increased relevance in the data set. Many people seem to think that science and history facts are the most common categories to appear in Jeopardy episodes. Others feel that Shakespeare questions gets an awful lot of attention from Jeopardy.
+
+We will now conduct a chi-square test to see if science, history and Shakespeare have higher prevalence than other categories in the data set. There are around 3368 unique categories in the Jeopardy data set after doing all of our cleaning. If we suppose that no category stood out, we would expect that the probability of picking a random category would be the same no matter what category you picked. 
+
+```{r}
+length(unique(jeop_clean$category))
+```
+Before doing the tests, let's establish some important parameters, including the expected probability if every category was chosen randomly. We have 3368 unique categories, so if we suppose that no category stood out, we would expect that the probability of picking a random category would be the same no matter what category you picked, this would also mean that the probability of not picking a particular category would be 3367/3368.
+
+```{r}
+n_questions <- nrow(jeop_clean)
+p_category_expected <-   1/3368
+p_not_category_expected <- 3367/3368
+p_expected <- c(p_category_expected, p_not_category_expected)
+```
+
+Now we are ready to build our hypothesis test which is the same for the three categories. We will count the number of questions which contains the category,the complementary count which doesn't present the category, and use them with the expected probabilities as inputs to the `chisq.test` function. Our null hypothesis $H_0$ is that the category has not higher prevalence than a random topic, while the alternative hypothesis $H_1$ states that the category is more likely to be chosen than random topic.
+
+```{r}
+n_science <- filter(jeop_clean, category=='science') %>% nrow()/n_questions
+n_not_science <- n_questions - n_science
+n_obs <- c(n_science, n_not_science)
+chisq.test(n_obs, p = p_expected)
+```
+
+
+
+```{r}
+n_history <- filter(jeop_clean, category=='history') %>% nrow()/n_questions
+n_not_history <- n_questions - n_history
+n_obs <- c(n_history, n_not_history)
+chisq.test(n_obs, p = p_expected)
+```
+
+
+```{r}
+n_sh <- filter(jeop_clean, category=='shakespeare') %>% nrow()/n_questions
+n_not_sh <- n_questions - n_history
+n_obs <- c(n_sh, n_not_sh)
+chisq.test(n_obs, p = p_expected)
+```
+
+In all three cases, with a similar p-value ~ 0.016 we reject $H_0$ and we can affirm that there enough evidence that **these three categories are more likely to be chosen** than a random category with probability `r sprintf("%.2f%%",p_category_expected)`.
+
+
+## Word occurrences in jeopardy questions
+
+Let's say you want to investigate how often new questions are repeats of older ones. We're only working with about 10% of the full Jeopardy question data set, but we can at least start investigating this question. 
+Let' use the `tm` library to create a Corpus object and then a term matrix of the words used in the questions:
+
+```{r}
+library(tm)
+corp <- VCorpus(VectorSource(jeop_clean$question))
+corp[[1]]$content
+```
+Let's also remove "stop words", commonly used words like articles, pronouns and short terms, which are note really useful to understand the question theme:
+
+```{r, warning=FALSE}
+corp <- tm_map(corp, removeWords, stopwords("english"))
+```
+
+Building a Document Term Matrix with minimum word length == 6 and then plotting a wordcloud:
+
+```{r, warning=FALSE}
+#restricting to words with at least two occurrences and min 3 char.
+quest_tdm <- DocumentTermMatrix(corp, control = list(wordLengths = c(3, Inf), bounds=list(global = c(2,Inf))))
+quest_m <- as.matrix(quest_tdm)
+wc <- colSums(quest_m)
+wordcounts <- data.frame(count = wc)
+pal <- RColorBrewer::brewer.pal(8, "Accent")
+wordcloud::wordcloud(freq = wordcounts$count, words = rownames(wordcounts), random.order = FALSE, colors = pal) 
+title(main="Most frequent words in jeopardy questions")
+
+```
+
+
+```{r}
+#top 100 word count
+head(sort(wc, decreasing = TRUE),100)
+```
+
+## Low & High Value terms
+
+Let's say you only want to study terms that have high values associated with it rather than low values. This optimization will help you earn more money when you're on Jeopardy while reducing the number of questions you have to study. To do this, we need to count how many high value and low value questions are associated with each term. For our exercise, we'll define low and high values as follows:
+
+Low value: Any row where value is less than 800.
+High value: Any row where value is greater or equal than 800.
+
+If you are not familiar with Jeopardy, below is an image of what the question board looks like at the start of every round:
+
+[Question board](https://dq-content.s3.amazonaws.com/443/jeopardy_game_board.png)
+
+For each category, we can see that under this definition that for every 2 high value questions, there are 3 low value questions. Once we count the number of low and high value questions that appear for each term, we can use this information to our advantage. If the number of high and low value questions is appreciably different from the 2:3 ratio, we would have reason to believe that a term would be more prevalent in either the low or high value questions. We can use the chi-squared test to test the null hypothesis that each term is not distributed more to either high or low value questions.
+
+
+```{r}
+jeop_clean %>% mutate(is_high = if_else(value >= 800, "high", "low")) -> jeop_clean
+
+word_values <- data.frame(row.names = names(wc))
+for (w in rownames(word_values)) {
+  counts <- filter(jeop_clean, str_detect(question, paste('\\b',w,'\\b',sep=''))) %>% 
+    count(is_high)
+  meanvalue <-  filter(jeop_clean, str_detect(question, paste('\\b',w,'\\b',sep=''))) %>% summarise(mean(value)) %>% pull()
+  word_values[w, 'nhigh'] = sum(word_values[w, 'nhigh'], counts$n[1], na.rm = TRUE)
+  word_values[w, 'nlow'] = sum(word_values[w, 'nlow'], counts$n[2], na.rm = TRUE) 
+  word_values[w, 'meanvalue'] = round(meanvalue,2)
+}
+
+```
+
+
+Now that we have obtained a data frame with the number of occurrences of each word in high and low value questions, we can calculate for each the chi square statistic, to see if there is a statistically significant difference with an equal distribution between the two (50/50). We have to bear in mind that for a significant chi square statistic the expected value for each group has to be at least 5:
+
+
+```{r}
+word_values_f <- word_values %>% filter((nlow + nhigh) *3/5 >=5 & (nlow + nhigh)*2/5 >=5)
+word_values_f$p_value <- word_values_f %>% pmap(~chisq.test(x=c(.x,.y), p = c(2/5,3/5))) %>% map_dbl("p.value")
+
+```
+
+It is then possible to adjust the p-values to take into account this multiple testing and the problem of increasing the overall alpha risk. Here it is done with the adjustment method of Holm:
+
+```{r}
+word_values_f$p_value_adj <- p.adjust(word_values_f$p_value, method = "holm")
+word_values_f$p_value <- round(word_values_f$p_value, 4)
+word_values_f$p_value_adj <- round(word_values_f$p_value_adj, 4)
+```
+
+We can now check the words with an adjusted p-value smaller than the significance level of 0.05:
+
+```{r}
+word_values_f %>% filter(p_value_adj < 0.05) %>% arrange(desc(nhigh/nlow))
+```
+
+If these words were equally distributed between high and low value questions, they would have had respectively 2/5 and 3/5 probability of falling into these classes. We can reject this hypothesis and affirm that these words are probably associated with the prevalence of the high value category.
